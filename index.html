@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>App Chat</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body {
+      background: #ffffff;
+      color: #0f172a;
+      min-height: 100dvh;
+      display: flex;
+      justify-content: center;
+      padding: 14px;
+    }
+    .app-shell {
+      width: 100%;
+      max-width: 520px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 18px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+
+    /* رأس التطبيق بخلفية بيضاء وعنوان App Chat */
+    .brand-header {
+      background: #ffffff;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-title {
+      font-size: 1.5rem;
+      font-weight: 900;
+      color: #0f172a;
+      letter-spacing: 0.3px;
+    }
+    .btn-ghost {
+      background: #f1f5f9;
+      color: #0f172a;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 7px 11px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* حقول وأزرار النماذج */
+    .card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card h2 { font-size: 1.05rem; color: #0f172a; }
+    .field {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 0.92rem;
+    }
+    .field:focus { outline: none; border-color: #2563eb; }
+    .btn-primary {
+      background: #2563eb;
+      color: #ffffff;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-accept {
+      background: #16a34a;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-reject {
+      background: #dc2626;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .status-msg { font-size: 0.84rem; color: #2563eb; min-height: 18px; }
+
+    /* القوائم وطلبات الاتصال */
+    .req-item, .contact-item {
+      border: 1px solid #e2e8f0;
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .sub-text { font-size: 0.78rem; color: #64748b; }
+
+    /* فقاعة تظهر للمستخدم عند وصول طلب أو حدث */
+    .floating-bubble {
+      display: none;
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(92%, 420px);
+      background: #ffffff;
+      color: #0f172a;
+      border: 2px solid #2563eb;
+      border-radius: 14px;
+      padding: 12px 14px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+      z-index: 99;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .floating-bubble.show { display: flex; }
+    .bubble-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  </style>
+</head>
+<body>
+  <!-- فقاعة تنبيه للمستخدم -->
+  <div class="floating-bubble" id="floatingBubble">
+    <div id="bubbleText" style="font-weight:700;font-size:0.9rem;"></div>
+    <div class="bubble-actions" id="bubbleActions"></div>
+  </div>
+
+  <div class="app-shell">
+    <header class="brand-header">
+      <div class="brand-title">App Chat</div>
+      <div style="display:flex;gap:6px;">
+        <button type="button" class="btn-ghost" onclick="requestSystemNotifications()">🔔 الإشعارات</button>
+        <button type="button" class="btn-ghost" id="logoutBtn" style="display:none;" onclick="logoutUser()">خروج</button>
+      </div>
+    </header>
+
+    <!-- شاشة تسجيل الدخول / إنشاء حساب -->
+    <section class="card" id="authCard">
+      <h2>تسجيل الدخول أو إنشاء حساب</h2>
+      <input type="tel" id="phoneInput" class="field" placeholder="رقم الموبايل (مثال: 07700000000)">
+      <input type="text" id="usernameInput" class="field" maxlength="24" placeholder="اسم المستخدم">
+      <input type="password" id="passwordInput" class="field" placeholder="كلمة السر">
+      <button type="button" class="btn-primary" onclick="loginOrRegister()">دخول / حفظ الحساب</button>
+      <div class="status-msg" id="authStatus"></div>
+    </section>
+
+    <!-- شاشة ما بعد تسجيل الدخول -->
+    <section id="mainDashboard" style="display:none;flex-direction:column;gap:14px;">
+      <div class="card">
+        <div style="font-weight:700;">مرحباً، <span id="activeUserLabel"></span></div>
+        <div class="sub-text">رقم الموبايل: <span id="activePhoneLabel"></span></div>
+      </div>
+
+      <!-- إضافة جهة اتصال -->
+      <div class="card">
+        <h2>إضافة جهة اتصال</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" id="targetContactInput" class="field" style="flex:1;min-width:170px;" placeholder="أدخل رقم موبايل أو اسم مستخدم">
+          <button type="button" class="btn-primary" onclick="sendContactRequest()">إرسال طلب</button>
+        </div>
+        <div class="status-msg" id="contactStatus"></div>
+      </div>
+
+      <!-- الطلبات الواردة مع أزرار قبول / رفض -->
+      <div class="card">
+        <h2>طلبات الاتصال الواردة</h2>
+        <div id="incomingRequestsBox"><div class="sub-text">لا توجد طلبات حالياً.</div></div>
+      </div>
+
+      <!-- جهات الاتصال المقبولة -->
+      <div class="card">
+        <h2>جهات الاتصال</h2>
+        <div id="acceptedContactsBox"><div class="sub-text">لا توجد جهات اتصال بعد.</div></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://lzvtnfdgynwczrkwlwhf.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6dnRuZmRneW53Y3pya3dsd2hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNDIxMTEsImV4cCI6MjEwNDcxODExMX0.w2hNlJ4SszyMBkUVjr1qiWNTTPxHMHkM9YOFtVP-pVI';
+    const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    let currentUser = JSON.parse(localStorage.getItem('appchat_session') || 'null');
+    let realtimeChannel = null;
+
+    async function hashPassword(pw) {
+      const data = new TextEncoder().encode(pw);
+      const buf = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function requestSystemNotifications() {
+      if (!('Notification' in window)) return alert('المتصفح لا يدعم إشعارات النظام.');
+      const perm = await Notification.requestPermission();
+      alert(perm === 'granted' ? 'تم تفعيل الإشعارات بنجاح ✅' : 'لم يتم منح صلاحية الإشعارات.');
+    }
+
+    function showBubbleAlert(message, requestObj = null) {
+      const bubble = document.getElementById('floatingBubble');
+      const textEl = document.getElementById('bubbleText');
+      const actionsEl = document.getElementById('bubbleActions');
+      textEl.textContent = message;
+      actionsEl.innerHTML = '';
+
+      if (requestObj) {
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'btn-accept';
+        acceptBtn.textContent = 'قبول';
+        acceptBtn.onclick = () => { respondToRequest(requestObj, 'accepted'); hideBubbleAlert(); };
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn-reject';
+        rejectBtn.textContent = 'رفض';
+        rejectBtn.onclick = () => { respondToRequest(requestObj, 'rejected'); hideBubbleAlert(); };
+
+        actionsEl.append(acceptBtn, rejectBtn);
+      } else {
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'btn-ghost';
+        closeBtn.textContent = 'حسناً';
+        closeBtn.onclick = hideBubbleAlert;
+        actionsEl.appendChild(closeBtn);
+      }
+
+      bubble.classList.add('show');
+
+      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+        new Notification('App Chat', { body: message });
+      }
+    }
+
+    function hideBubbleAlert() {
+      document.getElementById('floatingBubble').classList.remove('show');
+    }
+
+    async function loginOrRegister() {
+      const phone = document.getElementById('phoneInput').value.trim();
+      const username = document.getElementById('usernameInput').value.trim();
+      const password = document.getElementById('passwordInput').value;
+      const statusEl = document.getElementById('authStatus');
+
+      if (!sb) {
+        statusEl.textContent = 'تعذر الاتصال بقاعدة البيانات.';
+        return;
+      }
+      if (!phone || !username || !password) {
+        statusEl.textContent = 'يرجى إدخال رقم الموبايل واسم المستخدم وكلمة السر.';
+        return;
+      }
+
+      statusEl.textContent = 'جارٍ التحقق وحفظ الحساب...';
+      const pwHash = await hashPassword(password);
+
+      const { data: existing, error: fetchErr } = await sb
+        .from('app_chat_users')
+        .select('*')
+        .eq('phone', phone)
+        .maybeSingle();
+
+      if (fetchErr) {
+        statusEl.textContent = 'تأكد من إنشاء جدول app_chat_users في Supabase: ' + fetchErr.message;
+        return;
+      }
+
+      if (existing) {
+        if (existing.password_hash !== pwHash) {
+          statusEl.textContent = 'كلمة السر غير صحيحة لهذا الرقم.';
+          return;
+        }
+        await sb.from('app_chat_users').update({ username }).eq('phone', phone);
+      } else {
+        const { error: insertErr } = await sb
+          .from('app_chat_users')
+          .insert({ phone, username, password_hash: pwHash });
+        if (insertErr) {
+          statusEl.textContent = 'تعذر حفظ الحساب: ' + insertErr.message;
+          return;
+        }
+      }
+
+      currentUser = { phone, username };
+      localStorage.setItem('appchat_session', JSON.stringify(currentUser));
+      statusEl.textContent = '';
+      renderSession();
+      setupRealtime();
+      loadRequestsAndContacts();
+    }
+
+    function logoutUser() {
+      currentUser = null;
+      localStorage.removeItem('appchat_session');
+      if (realtimeChannel && sb) { sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+      document.getElementById('mainDashboard').style.display = 'none';
+      document.getElementById('logoutBtn').style.display = 'none';
+      document.getElementById('authCard').style.display = 'flex';
+    }
+
+    function renderSession() {
+      if (!currentUser) return;
+      document.getElementById('authCard').style.display = 'none';
+      document.getElementById('mainDashboard').style.display = 'flex';
+      document.getElementById('logoutBtn').style.display = 'inline-block';
+      document.getElementById('activeUserLabel').textContent = currentUser.username;
+      document.getElementById('activePhoneLabel').textContent = currentUser.phone;
+    }
+
+    async function sendContactRequest() {
+      if (!currentUser || !sb) return;
+      const target = document.getElementById('targetContactInput').value.trim();
+      const statusEl = document.getElementById('contactStatus');
+      if (!target) return;
+
+      let targetPhone = target;
+      if (!/^\+?\d{6,}$/.test(target)) {
+        const { data: u } = await sb.from('app_chat_users').select('phone').eq('username', target).maybeSingle();
+        if (!u) {
+          statusEl.textContent = 'لم يتم العثور على مستخدم بهذا الاسم.';
+          return;
+        }
+        targetPhone = u.phone;
+      }
+
+      if (targetPhone === currentUser.phone) {
+        statusEl.textContent = 'لا يمكنك إضافة رقمك نفسه.';
+        return;
+      }
+
+      const { data: inserted, error } = await sb
+        .from('app_chat_requests')
+        .insert({
+          from_phone: currentUser.phone,
+          from_name: currentUser.username,
+          to_phone: targetPhone,
+          status: 'pending'
+        })
+        .select()
+        .single();
+
+      if (error) {
+        statusEl.textContent = 'تعذر إرسال الطلب: ' + error.message;
+        return;
+      }
+
+      await realtimeChannel?.send({
+        type: 'broadcast',
+        event: 'contact_request',
+        payload: inserted
+      });
+
+      document.getElementById('targetContactInput').value = '';
+      statusEl.textContent = 'تم إرسال طلب الاتصال سحابياً ✅';
+      loadRequestsAndContacts();
+    }
+
+    async function respondToRequest(reqObj, decision) {
+      if (!sb || !reqObj?.id) return;
+      await sb.from('app_chat_requests').update({ status: decision }).eq('id', reqObj.id);
+      loadRequestsAndContacts();
+    }
+
+    async function loadRequestsAndContacts() {
+      if (!currentUser || !sb) return;
+
+      const { data: rows } = await sb
+        .from('app_chat_requests')
+        .select('*')
+        .or(`from_phone.eq.${currentUser.phone},to_phone.eq.${currentUser.phone}`);
+
+      const list = rows || [];
+      const incoming = list.filter(r => r.to_phone === currentUser.phone && r.status === 'pending');
+      const accepted = list.filter(r => r.status === 'accepted');
+
+      const reqBox = document.getElementById('incomingRequestsBox');
+      if (incoming.length === 0) {
+        reqBox.innerHTML = '<div class="sub-text">لا توجد طلبات حالياً.</div>';
+      } else {
+        reqBox.innerHTML = '';
+        incoming.forEach(r => {
+          const div = document.createElement('div');
+          div.className = 'req-item';
+          div.innerHTML = `<div><strong>${r.from_name}</strong> <div class="sub-text">${r.from_phone}</div></div>`;
+          const btns = document.createElement('div');
+          btns.style.display = 'flex';
+          btns.style.gap = '6px';
+
+          const acc = document.createElement('button');
+          acc.className = 'btn-accept';
+          acc.textContent = 'قبول';
+          acc.onclick = () => respondToRequest(r, 'accepted');
+
+          const rej = document.createElement('button');
+          rej.className = 'btn-reject';
+          rej.textContent = 'رفض';
+          rej.onclick = () => respondToRequest(r, 'rejected');
+
+          btns.append(acc, rej);
+          div.appendChild(btns);
+          reqBox.appendChild(div);
+        });
+      }
+
+      const accBox = document.getElementById('acceptedContactsBox');
+      if (accepted.length === 0) {
+        accBox.innerHTML = '<div class="sub-text">لا توجد جهات اتصال بعد.</div>';
+      } else {
+        accBox.innerHTML = accepted.map(r => {
+          const isSender = r.from_phone === currentUser.phone;
+          const otherPhone = isSender ? r.to_phone : r.from_phone;
+          const otherLabel = isSender ? otherPhone : `${r.from_name} (${otherPhone})`;
+          return `<div class="contact-item"><strong>${otherLabel}</strong><span class="sub-text">متصل كجهة اتصال ✅</span></div>`;
+        }).join('');
+      }
+    }
+
+    function setupRealtime() {
+      if (!sb || !currentUser || realtimeChannel) return;
+      realtimeChannel = sb.channel('app_chat_contacts_v1')
+        .on('broadcast', { event: 'contact_request' }, ({ payload }) => {
+          if (payload && payload.to_phone === currentUser.phone) {
+            showBubbleAlert(`طلب اتصال جديد من ${payload.from_name} (${payload.from_phone})`, payload);
+            loadRequestsAndContacts();
+          }
+        })
+        .subscribe();
+    }
+
+    if (currentUser) {
+      renderSession();
+      setupRealtime();
+      loadRequestsAndContacts();
+    }
+  </script>
+</body>
+</html>
