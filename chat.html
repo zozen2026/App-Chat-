@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>App Chat - المحادثة</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg-page: #ffffff;
+      --ink-main: #0f172a;
+      --ink-muted: #64748b;
+      --line: #e2e8f0;
+      --accent: #0ea5e9;
+      --accent-dark: #0284c7;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+    body {
+      background:
+        radial-gradient(circle at 10% 0%, rgba(14, 165, 233, 0.09), transparent 45%),
+        radial-gradient(circle at 90% 100%, rgba(56, 189, 248, 0.08), transparent 45%),
+        var(--bg-page);
+      color: var(--ink-main);
+      min-height: 100dvh;
+      display: flex;
+      justify-content: center;
+      padding: 12px;
+    }
+
+    .chat-frame {
+      width: 100%;
+      max-width: 540px;
+      height: calc(100dvh - 24px);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 24px 55px -12px rgba(15, 23, 42, 0.1);
+    }
+
+    /* الشريط العلوي */
+    .chat-top {
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .top-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .back-btn {
+      background: #f8fafc;
+      color: var(--ink-main);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 7px 11px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .back-btn:hover {
+      background: #f0f9ff;
+      border-color: #bae6fd;
+      color: var(--accent-dark);
+    }
+
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      font-weight: 900;
+      flex-shrink: 0;
+      box-shadow: 0 8px 18px -6px rgba(2, 132, 199, 0.45);
+    }
+    .peer-meta { min-width: 0; }
+    .peer-name {
+      font-size: 0.96rem;
+      font-weight: 800;
+      color: var(--ink-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .peer-phone {
+      font-size: 0.75rem;
+      color: var(--ink-muted);
+      font-weight: 600;
+      direction: ltr;
+      text-align: right;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .call-btn {
+      background: #f0f9ff;
+      color: var(--accent-dark);
+      border: 1px solid #bae6fd;
+      border-radius: 12px;
+      padding: 7px 11px;
+      font-size: 0.82rem;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .call-btn:hover { background: #e0f2fe; }
+    .call-btn.active {
+      background: #fef2f2;
+      color: var(--danger);
+      border-color: #fecaca;
+    }
+
+    /* شريط حالة المكالمة الصوتية */
+    .call-bar {
+      display: none;
+      background: #f0f9ff;
+      border-bottom: 1px solid #bae6fd;
+      padding: 8px 14px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #0369a1;
+    }
+    .call-bar.show { display: flex; }
+    .call-controls { display: flex; gap: 6px; }
+    .btn-mute {
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #cbd5e1;
+      border-radius: 9px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-hangup {
+      background: var(--danger);
+      color: #ffffff;
+      border: none;
+      border-radius: 9px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* مساحة الرسائل */
+    .messages-box {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background:
+        radial-gradient(circle at 20% 10%, rgba(14, 165, 233, 0.05), transparent 42%),
+        radial-gradient(circle at 80% 90%, rgba(16, 185, 129, 0.04), transparent 42%),
+        #f8fafc;
+    }
+
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      color: var(--ink-muted);
+      font-size: 0.88rem;
+      background: #ffffff;
+      border: 1px dashed #cbd5e1;
+      border-radius: 18px;
+      padding: 18px 22px;
+      max-width: 300px;
+    }
+
+    .msg-group {
+      display: flex;
+      flex-direction: column;
+      max-width: 80%;
+      gap: 3px;
+    }
+    .msg-group.mine { align-self: flex-start; }
+    .msg-group.theirs { align-self: flex-end; }
+
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 18px;
+      font-size: 0.92rem;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .msg-group.mine .bubble {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: #ffffff;
+      border-bottom-right-radius: 5px;
+      box-shadow: 0 8px 18px -8px rgba(2, 132, 199, 0.55);
+    }
+    .msg-group.theirs .bubble {
+      background: #ffffff;
+      color: var(--ink-main);
+      border: 1px solid var(--line);
+      border-bottom-left-radius: 5px;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+    }
+    .audio-player {
+      width: 220px;
+      max-width: 100%;
+      height: 36px;
+      display: block;
+    }
+    .msg-time {
+      font-size: 0.7rem;
+      color: #94a3b8;
+      padding: 0 6px;
+    }
+    .msg-group.theirs .msg-time { text-align: left; }
+
+    /* شريط الإرسال والدردشة الصوتية */
+    .composer {
+      background: #ffffff;
+      border-top: 1px solid var(--line);
+      padding: 10px 12px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .composer-input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 14px;
+      border-radius: 16px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: var(--ink-main);
+      font-size: 0.92rem;
+      transition: all 0.15s ease;
+    }
+    .composer-input:focus {
+      outline: none;
+      background: #ffffff;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.13);
+    }
+
+    .voice-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 15px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #0f172a;
+      font-size: 1.15rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+    .voice-btn:hover {
+      background: #f0f9ff;
+      border-color: #7dd3fc;
+    }
+    .voice-btn.recording {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #ffffff;
+      animation: pulseRec 1s infinite;
+    }
+    @keyframes pulseRec {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.07); }
+    }
+
+    .send-btn {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: #ffffff;
+      border: none;
+      border-radius: 16px;
+      padding: 11px 15px;
+      font-size: 0.88rem;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+      box-shadow: 0 8px 18px -8px rgba(2, 132, 199, 0.55);
+    }
+    .send-btn:active { transform: scale(0.97); }
+  </style>
+</head>
+<body>
+  <div class="chat-frame">
+    <header class="chat-top">
+      <div class="top-right">
+        <a href="index.html" class="back-btn">← رجوع</a>
+        <div class="avatar" id="peerAvatar">؟</div>
+        <div class="peer-meta">
+          <div class="peer-name" id="peerTitle">جاري التحميل...</div>
+          <div class="peer-phone" id="peerPhoneSub"></div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button type="button" class="call-btn" id="voiceCallBtn" onclick="toggleVoiceCall()">📞 صوتي</button>
+      </div>
+    </header>
+
+    <div class="call-bar" id="callBar">
+      <span id="callStatusText">🎧 مكالمة صوتية نشطة...</span>
+      <div class="call-controls">
+        <button type="button" class="btn-mute" id="muteBtn" onclick="toggleMute()">🔇 كتم</button>
+        <button type="button" class="btn-hangup" onclick="hangupVoiceCall()">إنهاء</button>
+      </div>
+    </div>
+
+    <main class="messages-box" id="messagesBox">
+      <div class="empty-state" id="emptyState">ابدأ المحادثة الآن بإرسال رسالة نصية أو صوتية ✨</div>
+    </main>
+
+    <form class="composer" onsubmit="sendMessage(event)">
+      <input type="text" id="msgInput" class="composer-input" maxlength="500" placeholder="اكتب رسالتك..." autocomplete="off">
+      <button type="button" class="voice-btn" id="voiceRecordBtn" title="تسجيل رسالة صوتية" onclick="toggleVoiceRecording()">🎙️</button>
+      <button type="submit" class="send-btn">إرسال ➤</button>
+    </form>
+  </div>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <script>
+    const SUPABASE_URL = 'https://lzvtnfdgynwczrkwlwhf.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6dnRuZmRneW53Y3pya3dsd2hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNDIxMTEsImV4cCI6MjEwNDcxODExMX0.w2hNlJ4SszyMBkUVjr1qiWNTTPxHMHkM9YOFtVP-pVI';
+    const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    const params = new URLSearchParams(window.location.search);
+    const peerPhone = (params.get('peer') || '').trim();
+    const peerNameParam = (params.get('name') || '').trim();
+    const currentUser = JSON.parse(localStorage.getItem('appchat_session') || 'null');
+
+    const messagesBox = document.getElementById('messagesBox');
+    const emptyState = document.getElementById('emptyState');
+    const msgInput = document.getElementById('msgInput');
+    const voiceRecordBtn = document.getElementById('voiceRecordBtn');
+    const callBar = document.getElementById('callBar');
+    const callStatusText = document.getElementById('callStatusText');
+    const voiceCallBtn = document.getElementById('voiceCallBtn');
+    const remoteAudio = document.getElementById('remoteAudio');
+    const renderedIds = new Set();
+
+    const VOICE_PREFIX = '[VOICE]:';
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+
+    // إعدادات المكالمة الصوتية عبر WebRTC
+    let callChannel = null;
+    let peerConn = null;
+    let localStream = null;
+    let isMuted = false;
+
+    function formatClock(iso) {
+      const d = iso ? new Date(iso) : new Date();
+      return d.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function appendBubble(msg) {
+      if (msg.id && renderedIds.has(msg.id)) return;
+      if (msg.id) renderedIds.add(msg.id);
+      if (emptyState) emptyState.remove();
+
+      const mine = currentUser && msg.sender_phone === currentUser.phone;
+      const group = document.createElement('div');
+      group.className = `msg-group ${mine ? 'mine' : 'theirs'}`;
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+
+      if (typeof msg.body === 'string' && msg.body.startsWith(VOICE_PREFIX)) {
+        const audioSrc = msg.body.slice(VOICE_PREFIX.length);
+        const audioEl = document.createElement('audio');
+        audioEl.className = 'audio-player';
+        audioEl.controls = true;
+        audioEl.src = audioSrc;
+        bubble.appendChild(audioEl);
+      } else {
+        bubble.textContent = msg.body;
+      }
+
+      const time = document.createElement('div');
+      time.className = 'msg-time';
+      time.textContent = formatClock(msg.created_at);
+
+      group.append(bubble, time);
+      messagesBox.appendChild(group);
+      messagesBox.scrollTop = messagesBox.scrollHeight;
+    }
+
+    async function initHeader() {
+      if (!peerPhone) {
+        document.getElementById('peerTitle').textContent = 'لم يتم تحديد رقم';
+        return;
+      }
+      let displayName = peerNameParam || peerPhone;
+      if (sb && !peerNameParam) {
+        const { data } = await sb.from('app_chat_users').select('username').eq('phone', peerPhone).maybeSingle();
+        if (data && data.username) displayName = data.username;
+      }
+      document.getElementById('peerTitle').textContent = displayName;
+      document.getElementById('peerPhoneSub').textContent = peerPhone;
+      document.getElementById('peerAvatar').textContent = displayName.trim().charAt(0).toUpperCase() || '💬';
+      document.title = `App Chat - ${displayName}`;
+    }
+
+    async function loadHistory() {
+      if (!sb || !currentUser || !peerPhone) return;
+      const { data, error } = await sb
+        .from('app_chat_messages')
+        .select('*')
+        .or(`and(sender_phone.eq.${currentUser.phone},receiver_phone.eq.${peerPhone}),and(sender_phone.eq.${peerPhone},receiver_phone.eq.${currentUser.phone})`)
+        .order('created_at', { ascending: true });
+
+      if (!error && Array.isArray(data)) {
+        data.forEach(appendBubble);
+      }
+    }
+
+    async function persistMessageBody(bodyText) {
+      if (!currentUser) {
+        alert('يرجى تسجيل الدخول أولاً من الصفحة الرئيسية.');
+        return;
+      }
+      if (!peerPhone || !sb) return;
+
+      const { data, error } = await sb
+        .from('app_chat_messages')
+        .insert({
+          sender_phone: currentUser.phone,
+          receiver_phone: peerPhone,
+          body: bodyText
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        appendBubble(data);
+      }
+    }
+
+    async function sendMessage(e) {
+      e.preventDefault();
+      const text = msgInput.value.trim();
+      if (!text) return;
+      msgInput.value = '';
+      await persistMessageBody(text);
+    }
+
+    // تسجيل وإرسال رسالة صوتية
+    async function toggleVoiceRecording() {
+      if (!currentUser) {
+        alert('يرجى تسجيل الدخول أولاً من الصفحة الرئيسية.');
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('المتصفح لا يدعم التسجيل الصوتي.');
+        return;
+      }
+
+      if (!isRecording) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+
+          mediaRecorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) audioChunks.push(ev.data);
+          };
+
+          mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+            if (blob.size < 200) return;
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+              if (typeof reader.result === 'string') {
+                await persistMessageBody(VOICE_PREFIX + reader.result);
+              }
+            };
+            reader.readAsDataURL(blob);
+          };
+
+          mediaRecorder.start();
+          isRecording = true;
+          voiceRecordBtn.classList.add('recording');
+          voiceRecordBtn.textContent = '⏹️';
+        } catch (err) {
+          alert('تعذر الوصول إلى الميكروفون. يرجى السماح بالصلاحية.');
+        }
+      } else {
+        isRecording = false;
+        voiceRecordBtn.classList.remove('recording');
+        voiceRecordBtn.textContent = '🎙️';
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+      }
+    }
+
+    // مكالمة صوتية مباشرة عبر WebRTC + Supabase Broadcast
+    function createPeerConnection() {
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      pc.onicecandidate = (ev) => {
+        if (ev.candidate && callChannel) {
+          callChannel.send({
+            type: 'broadcast',
+            event: 'webrtc_ice',
+            payload: { from: currentUser.phone, to: peerPhone, candidate: ev.candidate }
+          }).catch(() => {});
+        }
+      };
+      pc.ontrack = (ev) => {
+        if (ev.streams && ev.streams[0]) {
+          remoteAudio.srcObject = ev.streams[0];
+        }
+      };
+      return pc;
+    }
+
+    async function toggleVoiceCall() {
+      if (peerConn) {
+        hangupVoiceCall();
+        return;
+      }
+      if (!currentUser || !peerPhone || !callChannel) return;
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        peerConn = createPeerConnection();
+        localStream.getTracks().forEach(track => peerConn.addTrack(track, localStream));
+
+        const offer = await peerConn.createOffer();
+        await peerConn.setLocalDescription(offer);
+
+        callBar.classList.add('show');
+        callStatusText.textContent = '📞 جارٍ الاتصال صوتياً...';
+        voiceCallBtn.classList.add('active');
+        voiceCallBtn.textContent = '📵 إنهاء';
+
+        await callChannel.send({
+          type: 'broadcast',
+          event: 'webrtc_offer',
+          payload: { from: currentUser.phone, to: peerPhone, offer }
+        });
+      } catch (err) {
+        alert('تعذر بدء المكالمة الصوتية.');
+        hangupVoiceCall();
+      }
+    }
+
+    function toggleMute() {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+      document.getElementById('muteBtn').textContent = isMuted ? '🔊 إلغاء الكتم' : '🔇 كتم';
+    }
+
+    function hangupVoiceCall(notifyPeer = true) {
+      if (notifyPeer && callChannel && currentUser && peerPhone) {
+        callChannel.send({
+          type: 'broadcast',
+          event: 'webrtc_hangup',
+          payload: { from: currentUser.phone, to: peerPhone }
+        }).catch(() => {});
+      }
+      if (peerConn) { peerConn.close(); peerConn = null; }
+      if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+      remoteAudio.srcObject = null;
+      isMuted = false;
+      document.getElementById('muteBtn').textContent = '🔇 كتم';
+      callBar.classList.remove('show');
+      voiceCallBtn.classList.remove('active');
+      voiceCallBtn.textContent = '📞 صوتي';
+    }
+
+    function subscribeMessages() {
+      if (!sb || !currentUser || !peerPhone) return;
+
+      sb.channel(`dm_${currentUser.phone}_${peerPhone}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'app_chat_messages' },
+          ({ new: row }) => {
+            if (!row) return;
+            const betweenUs =
+              (row.sender_phone === currentUser.phone && row.receiver_phone === peerPhone) ||
+              (row.sender_phone === peerPhone && row.receiver_phone === currentUser.phone);
+            if (betweenUs) appendBubble(row);
+          }
+        )
+        .subscribe();
+
+      const roomKey = [currentUser.phone, peerPhone].sort().join('_');
+      callChannel = sb.channel(`voice_call_${roomKey}`)
+        .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
+          if (!payload || payload.to !== currentUser.phone) return;
+          const accept = confirm(`مكالمة صوتية واردة من ${peerPhone}. هل تريد الرد؟`);
+          if (!accept) return;
+          try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            peerConn = createPeerConnection();
+            localStream.getTracks().forEach(track => peerConn.addTrack(track, localStream));
+            await peerConn.setRemoteDescription(new RTCSessionDescription(payload.offer));
+            const answer = await peerConn.createAnswer();
+            await peerConn.setLocalDescription(answer);
+            callBar.classList.add('show');
+            callStatusText.textContent = '🎧 متصل صوتياً الآن';
+            voiceCallBtn.classList.add('active');
+            voiceCallBtn.textContent = '📵 إنهاء';
+            await callChannel.send({
+              type: 'broadcast',
+              event: 'webrtc_answer',
+              payload: { from: currentUser.phone, to: payload.from, answer }
+            });
+          } catch (e) {
+            hangupVoiceCall();
+          }
+        })
+        .on('broadcast', { event: 'webrtc_answer' }, async ({ payload }) => {
+          if (!payload || payload.to !== currentUser.phone || !peerConn) return;
+          await peerConn.setRemoteDescription(new RTCSessionDescription(payload.answer));
+          callStatusText.textContent = '🎧 متصل صوتياً الآن';
+        })
+        .on('broadcast', { event: 'webrtc_ice' }, async ({ payload }) => {
+          if (!payload || payload.to !== currentUser.phone || !peerConn || !payload.candidate) return;
+          try { await peerConn.addIceCandidate(new RTCIceCandidate(payload.candidate)); } catch (e) {}
+        })
+        .on('broadcast', { event: 'webrtc_hangup' }, ({ payload }) => {
+          if (payload && payload.to === currentUser.phone) {
+            hangupVoiceCall(false);
+          }
+        })
+        .subscribe();
+    }
+
+    initHeader();
+    loadHistory();
+    subscribeMessages();
+  </script>
+</body>
+</html>
