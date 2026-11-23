@@ -374,7 +374,6 @@
 
     const renderedMids = new Set();
     const VOICE_PREFIX = '[VOICE]:';
-    const MID_REGEX = /^\[MID:([^\]]+)\]:/;
 
     let mediaRecorder = null;
     let audioChunks = [];
@@ -406,20 +405,21 @@
       else if (emptyStateEl && emptyStateEl.parentNode) emptyStateEl.remove();
     }
 
-    function parseEncodedBody(rawBody) {
+    function extractMidAndClean(rawBody) {
       const str = String(rawBody || '');
-      const match = str.match(MID_REGEX);
-      const mid = match ? match[1] : null;
+      const match = str.match(/^\s*\[MID:([^\]]+)\]:?\s*/i);
+      const mid = match ? match[1].trim() : null;
       const cleanBody = match ? str.slice(match[0].length) : str;
       return { mid, cleanBody };
     }
 
     function appendBubble(msg) {
-      if (!msg || !msg.body) return;
-      const { mid, cleanBody } = parseEncodedBody(msg.body);
-      const uniqueKey = mid || (msg.id ? `db_${msg.id}` : `fallback_${msg.sender_phone}_${cleanBody.slice(0, 40)}`);
-      if (renderedMids.has(uniqueKey)) return;
-      renderedMids.add(uniqueKey);
+      if (!msg || typeof msg.body !== 'string') return;
+      const { mid, cleanBody } = extractMidAndClean(msg.body);
+      const dedupKey = mid || (msg.id ? `id_${msg.id}` : `raw_${msg.sender_phone}_${cleanBody}`);
+
+      if (renderedMids.has(dedupKey)) return;
+      renderedMids.add(dedupKey);
       removeEmptyState();
 
       const mine = currentUser && msg.sender_phone === currentUser.phone;
