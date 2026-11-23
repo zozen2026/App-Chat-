@@ -56,6 +56,7 @@
       gap: 10px;
       padding-bottom: 14px;
       border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
     }
     .brand-wrap {
       display: flex;
@@ -91,6 +92,7 @@
       display: flex;
       gap: 6px;
       align-items: center;
+      flex-wrap: wrap;
     }
     .btn-pill {
       background: var(--bg-soft);
@@ -107,6 +109,11 @@
       background: var(--accent-soft);
       border-color: #bae6fd;
       color: var(--accent-dark);
+    }
+    .btn-pill.enabled {
+      background: #ecfdf5;
+      border-color: #a7f3d0;
+      color: #047857;
     }
 
     /* البطاقات */
@@ -309,11 +316,11 @@
         <div class="brand-logo">C</div>
         <div>
           <div class="brand-title">App Chat</div>
-          <div class="brand-sub">تواصل سريع وأنيق</div>
+          <div class="brand-sub" id="bgStatusSub">تواصل سريع وأنيق</div>
         </div>
       </div>
       <div class="header-actions">
-        <button type="button" class="btn-pill" onclick="requestSystemNotifications()">🔔 الإشعارات</button>
+        <button type="button" class="btn-pill" id="bgNotifyBtn" onclick="enableBackgroundNotifications()">🔔 تفعيل الإشعارات والخلفية</button>
         <button type="button" class="btn-pill" id="logoutBtn" style="display:none;" onclick="logoutUser()">خروج</button>
       </div>
     </header>
@@ -364,10 +371,141 @@
   <script>
     const SUPABASE_URL = 'https://lzvtnfdgynwczrkwlwhf.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6dnRuZmRneW53Y3pya3dsd2hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNDIxMTEsImV4cCI6MjEwNDcxODExMX0.w2hNlJ4SszyMBkUVjr1qiWNTTPxHMHkM9YOFtVP-pVI';
-    const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+    // ضع هنا مفتاح VAPID العام الخاص بمشروعك على Supabase
+    const VAPID_PUBLIC_KEY = '';
+
+    const sb = window.supabase
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          realtime: { params: { eventsPerSecond: 20 } }
+        })
+      : null;
 
     let currentUser = JSON.parse(localStorage.getItem('appchat_session') || 'null');
     let realtimeChannel = null;
+    let backgroundWatchTimer = null;
+    let swRegistration = null;
+    const notifiedIds = new Set();
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    }
+
+    function updateNotifyButtonUI() {
+      const btn = document.getElementById('bgNotifyBtn');
+      const sub = document.getElementById('bgStatusSub');
+      if ('Notification' in window && Notification.permission === 'granted') {
+        btn.classList.add('enabled');
+        btn.textContent = '✅ الإشعارات مفعّلة';
+        sub.textContent = 'مراقبة الرسائل والمكالمات نشطة';
+      } else {
+        btn.classList.remove('enabled');
+        btn.textContent = '🔔 تفعيل الإشعارات والخلفية';
+        sub.textContent = 'تواصل سريع وأنيق';
+      }
+    }
+
+    async function registerServiceWorkerHelper() {
+      if (!('serviceWorker' in navigator)) return null;
+      try {
+        const swCode = `
+          self.addEventListener('install', () => self.skipWaiting());
+          self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+          self.addEventListener('push', (event) => {
+            let data = { title: 'App Chat', body: 'لديك إشعار جديد', url: './index.html' };
+            try {
+              if (event.data) data = Object.assign(data, event.data.json());
+            } catch (_) {}
+            event.waitUntil(
+              self.registration.showNotification(data.title, {
+                body: data.body,
+                data: { url: data.url },
+                tag: 'appchat-push-' + Date.now()
+              })
+            );
+          });
+          self.addEventListener('notificationclick', (event) => {
+            event.notification.close();
+            const targetUrl = (event.notification.data && event.notification.data.url) || './index.html';
+            event.waitUntil(
+              self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+                for (const c of clients) {
+                  if ('focus' in c) {
+                    c.navigate(targetUrl).catch(() => {});
+                    return c.focus();
+                  }
+                }
+                if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+              })
+            );
+          });
+        `;
+        const blob = new Blob([swCode], { type: 'application/javascript' });
+        const swUrl = URL.createObjectURL(blob);
+        swRegistration = await navigator.serviceWorker.register(swUrl);
+        await navigator.serviceWorker.ready;
+        return swRegistration;
+      } catch (e) {
+        swRegistration = null;
+        return null;
+      }
+    }
+
+    async function subscribeDeviceToServerPush() {
+      const reg = swRegistration || await registerServiceWorkerHelper();
+      if (!currentUser || !sb || !reg || !('pushManager' in reg) || !VAPID_PUBLIC_KEY) return;
+      try {
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+        const subJson = sub.toJSON();
+        await sb.from('app_chat_push_subs').upsert({
+          phone: currentUser.phone,
+          endpoint: subJson.endpoint,
+          subscription: subJson,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'endpoint' });
+      } catch (_) {}
+    }
+
+    async function enableBackgroundNotifications() {
+      if (!('Notification' in window)) {
+        alert('هذا المتصفح لا يدعم الإشعارات.');
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      await registerServiceWorkerHelper();
+      await subscribeDeviceToServerPush();
+      updateNotifyButtonUI();
+      if (permission === 'granted') {
+        startBackgroundWatcher();
+        pushSystemNotification('App Chat', 'تم تفعيل الإشعارات ومراقبة الرسائل والمكالمات بنجاح 🔔', './index.html');
+      } else {
+        alert('يرجى السماح بصلاحية الإشعارات من المتصفح.');
+      }
+    }
+
+    async function pushSystemNotification(title, body, url = './index.html') {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      try {
+        if (swRegistration && swRegistration.active) {
+          await swRegistration.showNotification(title, { body, data: { url }, tag: 'appchat-' + Date.now() });
+          return;
+        }
+      } catch (e) {}
+      try {
+        const n = new Notification(title, { body });
+        n.onclick = () => {
+          window.focus();
+          if (url) window.location.href = url;
+        };
+      } catch (e) {}
+    }
 
     async function hashPassword(pw) {
       const data = new TextEncoder().encode(pw);
@@ -375,13 +513,7 @@
       return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
-    async function requestSystemNotifications() {
-      if (!('Notification' in window)) return alert('المتصفح لا يدعم إشعارات النظام.');
-      const perm = await Notification.requestPermission();
-      alert(perm === 'granted' ? 'تم تفعيل الإشعارات بنجاح ✅' : 'لم يتم منح صلاحية الإشعارات.');
-    }
-
-    function showBubbleAlert(message, requestObj = null) {
+    function showBubbleAlert(message, requestObj = null, openUrl = null) {
       const bubble = document.getElementById('floatingBubble');
       const textEl = document.getElementById('bubbleText');
       const actionsEl = document.getElementById('bubbleActions');
@@ -401,6 +533,13 @@
 
         actionsEl.append(acceptBtn, rejectBtn);
       } else {
+        if (openUrl) {
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn-accept';
+          openBtn.textContent = 'فتح';
+          openBtn.onclick = () => { hideBubbleAlert(); window.location.href = openUrl; };
+          actionsEl.appendChild(openBtn);
+        }
         const closeBtn = document.createElement('button');
         closeBtn.className = 'btn-pill';
         closeBtn.textContent = 'حسناً';
@@ -410,8 +549,8 @@
 
       bubble.classList.add('show');
 
-      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
-        new Notification('App Chat', { body: message });
+      if (document.hidden || !document.hasFocus()) {
+        pushSystemNotification('App Chat', message, openUrl || './index.html');
       }
     }
 
@@ -469,13 +608,16 @@
       statusEl.textContent = '';
       renderSession();
       setupRealtime();
+      startBackgroundWatcher();
       loadRequestsAndContacts();
+      await subscribeDeviceToServerPush();
     }
 
     function logoutUser() {
       currentUser = null;
       localStorage.removeItem('appchat_session');
       if (realtimeChannel && sb) { sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+      if (backgroundWatchTimer) { clearInterval(backgroundWatchTimer); backgroundWatchTimer = null; }
       document.getElementById('mainDashboard').style.display = 'none';
       document.getElementById('logoutBtn').style.display = 'none';
       document.getElementById('authCard').style.display = 'flex';
@@ -610,6 +752,50 @@
       }
     }
 
+    function formatIncomingMessagePreview(rawBody) {
+      const clean = String(rawBody || '').replace(/^\s*\[MID:([^\]]+)\]:?\s*/i, '');
+      if (clean.startsWith('[VOICE]:')) return '🎙️ رسالة صوتية جديدة';
+      return clean;
+    }
+
+    async function checkIncomingMessagesAndCalls() {
+      if (!sb || !currentUser) return;
+      const { data: msgs } = await sb
+        .from('app_chat_messages')
+        .select('*')
+        .eq('receiver_phone', currentUser.phone)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (!Array.isArray(msgs)) return;
+      for (const m of msgs) {
+        const key = 'msg_' + (m.id || `${m.sender_phone}_${m.created_at}`);
+        if (notifiedIds.has(key)) continue;
+        notifiedIds.add(key);
+
+        const ageMs = Date.now() - new Date(m.created_at || Date.now()).getTime();
+        if (ageMs > 30000) continue;
+
+        const clean = String(m.body || '').replace(/^\s*\[MID:([^\]]+)\]:?\s*/i, '');
+        const chatUrl = `chat.html?peer=${encodeURIComponent(m.sender_phone)}`;
+        if (clean.startsWith('[CALL_OFFER]:')) {
+          showBubbleAlert(`📞 مكالمة صوتية واردة من ${m.sender_phone}`, null, chatUrl);
+        } else {
+          const preview = formatIncomingMessagePreview(m.body);
+          showBubbleAlert(`💬 رسالة من ${m.sender_phone}: ${preview}`, null, chatUrl);
+        }
+      }
+    }
+
+    function startBackgroundWatcher() {
+      if (!sb || !currentUser || backgroundWatchTimer) return;
+      checkIncomingMessagesAndCalls();
+      backgroundWatchTimer = setInterval(() => {
+        checkIncomingMessagesAndCalls();
+        loadRequestsAndContacts();
+      }, 2500);
+    }
+
     function setupRealtime() {
       if (!sb || !currentUser || realtimeChannel) return;
       realtimeChannel = sb.channel('app_chat_contacts_v1')
@@ -619,13 +805,34 @@
             loadRequestsAndContacts();
           }
         })
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'app_chat_messages' },
+          ({ new: row }) => {
+            if (!row || row.receiver_phone !== currentUser.phone) return;
+            const key = 'msg_' + (row.id || `${row.sender_phone}_${row.created_at}`);
+            if (notifiedIds.has(key)) return;
+            notifiedIds.add(key);
+
+            const clean = String(row.body || '').replace(/^\s*\[MID:([^\]]+)\]:?\s*/i, '');
+            const chatUrl = `chat.html?peer=${encodeURIComponent(row.sender_phone)}`;
+            if (clean.startsWith('[CALL_OFFER]:')) {
+              showBubbleAlert(`📞 مكالمة صوتية واردة من ${row.sender_phone}`, null, chatUrl);
+            } else {
+              showBubbleAlert(`💬 رسالة من ${row.sender_phone}: ${formatIncomingMessagePreview(row.body)}`, null, chatUrl);
+            }
+          }
+        )
         .subscribe();
     }
 
+    updateNotifyButtonUI();
     if (currentUser) {
       renderSession();
       setupRealtime();
+      startBackgroundWatcher();
       loadRequestsAndContacts();
+      registerServiceWorkerHelper().then(() => subscribeDeviceToServerPush());
     }
   </script>
 </body>
