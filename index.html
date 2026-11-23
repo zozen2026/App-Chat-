@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>App Chat</title>
+  <link rel="manifest" href="./manifest.json">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root {
@@ -371,8 +372,7 @@
   <script>
     const SUPABASE_URL = 'https://lzvtnfdgynwczrkwlwhf.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6dnRuZmRneW53Y3pya3dsd2hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNDIxMTEsImV4cCI6MjEwNDcxODExMX0.w2hNlJ4SszyMBkUVjr1qiWNTTPxHMHkM9YOFtVP-pVI';
-    // ضع هنا مفتاح VAPID العام الخاص بمشروعك على Supabase
-    const VAPID_PUBLIC_KEY = '';
+    const VAPID_PUBLIC_KEY = 'BLNsAE1jWfxabnffq8ZVuzKKvNPFtPTHwm7WFNSgmBDtnaasqtWCpnYuVjxq1AKRlLeP1pTdu-5jmD9iazUZFww';
 
     const sb = window.supabase
       ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -410,83 +410,78 @@
     }
 
     async function registerServiceWorkerHelper() {
-      if (!('serviceWorker' in navigator)) return null;
-      try {
-        const swCode = `
-          self.addEventListener('install', () => self.skipWaiting());
-          self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
-          self.addEventListener('push', (event) => {
-            let data = { title: 'App Chat', body: 'لديك إشعار جديد', url: './index.html' };
-            try {
-              if (event.data) data = Object.assign(data, event.data.json());
-            } catch (_) {}
-            event.waitUntil(
-              self.registration.showNotification(data.title, {
-                body: data.body,
-                data: { url: data.url },
-                tag: 'appchat-push-' + Date.now()
-              })
-            );
-          });
-          self.addEventListener('notificationclick', (event) => {
-            event.notification.close();
-            const targetUrl = (event.notification.data && event.notification.data.url) || './index.html';
-            event.waitUntil(
-              self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-                for (const c of clients) {
-                  if ('focus' in c) {
-                    c.navigate(targetUrl).catch(() => {});
-                    return c.focus();
-                  }
-                }
-                if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
-              })
-            );
-          });
-        `;
-        const blob = new Blob([swCode], { type: 'application/javascript' });
-        const swUrl = URL.createObjectURL(blob);
-        swRegistration = await navigator.serviceWorker.register(swUrl);
-        await navigator.serviceWorker.ready;
-        return swRegistration;
-      } catch (e) {
-        swRegistration = null;
-        return null;
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('المتصفح لا يدعم Service Worker.');
       }
+      swRegistration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      await navigator.serviceWorker.ready;
+      return swRegistration;
     }
 
-    async function subscribeDeviceToServerPush() {
+    async function subscribeDeviceToServerPush(showFeedback = false) {
+      if (!currentUser || !sb) {
+        if (showFeedback) alert('سجّل الدخول أولاً لتفعيل الإشعارات.');
+        return false;
+      }
+
       const reg = swRegistration || await registerServiceWorkerHelper();
-      if (!currentUser || !sb || !reg || !('pushManager' in reg) || !VAPID_PUBLIC_KEY) return;
-      try {
-        const sub = await reg.pushManager.subscribe({
+      if (!reg || !('pushManager' in reg)) {
+        if (showFeedback) alert('تعذر الوصول إلى PushManager في هذا المتصفح.');
+        return false;
+      }
+
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
         });
-        const subJson = sub.toJSON();
-        await sb.from('app_chat_push_subs').upsert({
-          phone: currentUser.phone,
+      }
+
+      const subJson = subscription.toJSON();
+      const { error } = await sb
+        .from('app_chat_push_subs')
+        .upsert({
+          phone: String(currentUser.phone).trim(),
           endpoint: subJson.endpoint,
           subscription: subJson,
           updated_at: new Date().toISOString()
         }, { onConflict: 'endpoint' });
-      } catch (_) {}
+
+      if (error) {
+        console.error('فشل حفظ الاشتراك:', error);
+        if (showFeedback) alert('تعذر حفظ الاشتراك في قاعدة البيانات: ' + error.message);
+        return false;
+      }
+
+      return true;
     }
 
     async function enableBackgroundNotifications() {
-      if (!('Notification' in window)) {
-        alert('هذا المتصفح لا يدعم الإشعارات.');
+      if (!('Notification' in window) || !('PushManager' in window)) {
+        alert('هذا المتصفح لا يدعم إشعارات Push خارج المتصفح.');
         return;
       }
-      const permission = await Notification.requestPermission();
-      await registerServiceWorkerHelper();
-      await subscribeDeviceToServerPush();
-      updateNotifyButtonUI();
-      if (permission === 'granted') {
-        startBackgroundWatcher();
-        pushSystemNotification('App Chat', 'تم تفعيل الإشعارات ومراقبة الرسائل والمكالمات بنجاح 🔔', './index.html');
-      } else {
-        alert('يرجى السماح بصلاحية الإشعارات من المتصفح.');
+
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          updateNotifyButtonUI();
+          alert('يرجى السماح بصلاحية الإشعارات من المتصفح.');
+          return;
+        }
+
+        await registerServiceWorkerHelper();
+        const saved = await subscribeDeviceToServerPush(true);
+        updateNotifyButtonUI();
+
+        if (saved) {
+          startBackgroundWatcher();
+          pushSystemNotification('App Chat', 'تم تفعيل الإشعارات وحفظ اشتراك الجهاز بنجاح 🔔', './index.html');
+        }
+      } catch (err) {
+        console.error(err);
+        alert('حدث خطأ أثناء تفعيل الإشعارات: ' + (err.message || String(err)));
       }
     }
 
@@ -494,17 +489,22 @@
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
       try {
         if (swRegistration && swRegistration.active) {
-          await swRegistration.showNotification(title, { body, data: { url }, tag: 'appchat-' + Date.now() });
+          await swRegistration.showNotification(title, {
+            body,
+            data: { url },
+            tag: 'appchat-' + Date.now(),
+            renotify: true
+          });
           return;
         }
-      } catch (e) {}
+      } catch (_) {}
       try {
         const n = new Notification(title, { body });
         n.onclick = () => {
           window.focus();
           if (url) window.location.href = url;
         };
-      } catch (e) {}
+      } catch (_) {}
     }
 
     async function hashPassword(pw) {
@@ -610,7 +610,10 @@
       setupRealtime();
       startBackgroundWatcher();
       loadRequestsAndContacts();
-      await subscribeDeviceToServerPush();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        await registerServiceWorkerHelper().catch(() => {});
+        await subscribeDeviceToServerPush(false);
+      }
     }
 
     function logoutUser() {
@@ -832,7 +835,13 @@
       setupRealtime();
       startBackgroundWatcher();
       loadRequestsAndContacts();
-      registerServiceWorkerHelper().then(() => subscribeDeviceToServerPush());
+      registerServiceWorkerHelper()
+        .then(() => {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            return subscribeDeviceToServerPush(false);
+          }
+        })
+        .catch(() => {});
     }
   </script>
 </body>
