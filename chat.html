@@ -372,12 +372,14 @@
     const liveStateText = document.getElementById('liveStateText');
     const remoteAudio = document.getElementById('remoteAudio');
 
-    const renderedKeys = new Set();
+    const renderedMids = new Set();
     const VOICE_PREFIX = '[VOICE]:';
+    const MID_REGEX = /^\[MID:([^\]]+)\]:/;
+
     let mediaRecorder = null;
     let audioChunks = [];
     let isRecording = false;
-    let isSendingVoice = false;
+    let isProcessingVoiceStop = false;
 
     let dmChannel = null;
     let dmSubscribed = false;
@@ -404,32 +406,20 @@
       else if (emptyStateEl && emptyStateEl.parentNode) emptyStateEl.remove();
     }
 
-    function getMessageSignature(msg) {
-      const sec = msg.created_at ? String(msg.created_at).slice(0, 19) : '';
-      const bodyKey = typeof msg.body === 'string' && msg.body.startsWith(VOICE_PREFIX)
-        ? `voice_${msg.body.length}_${msg.body.slice(-24)}`
-        : String(msg.body || '');
-      return `sig_${msg.sender_phone || ''}_${msg.receiver_phone || ''}_${sec}_${bodyKey}`;
-    }
-
-    function isAlreadyRendered(msg) {
-      if (!msg) return true;
-      if (msg.id && renderedKeys.has(`id_${msg.id}`)) return true;
-      if (msg.client_msg_id && renderedKeys.has(`cid_${msg.client_msg_id}`)) return true;
-      if (renderedKeys.has(getMessageSignature(msg))) return true;
-      return false;
-    }
-
-    function markRendered(msg) {
-      if (!msg) return;
-      if (msg.id) renderedKeys.add(`id_${msg.id}`);
-      if (msg.client_msg_id) renderedKeys.add(`cid_${msg.client_msg_id}`);
-      renderedKeys.add(getMessageSignature(msg));
+    function parseEncodedBody(rawBody) {
+      const str = String(rawBody || '');
+      const match = str.match(MID_REGEX);
+      const mid = match ? match[1] : null;
+      const cleanBody = match ? str.slice(match[0].length) : str;
+      return { mid, cleanBody };
     }
 
     function appendBubble(msg) {
-      if (!msg || isAlreadyRendered(msg)) return;
-      markRendered(msg);
+      if (!msg || !msg.body) return;
+      const { mid, cleanBody } = parseEncodedBody(msg.body);
+      const uniqueKey = mid || (msg.id ? `db_${msg.id}` : `fallback_${msg.sender_phone}_${cleanBody.slice(0, 40)}`);
+      if (renderedMids.has(uniqueKey)) return;
+      renderedMids.add(uniqueKey);
       removeEmptyState();
 
       const mine = currentUser && msg.sender_phone === currentUser.phone;
@@ -439,8 +429,8 @@
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
 
-      if (typeof msg.body === 'string' && msg.body.startsWith(VOICE_PREFIX)) {
-        const audioSrc = msg.body.slice(VOICE_PREFIX.length);
+      if (cleanBody.startsWith(VOICE_PREFIX)) {
+        const audioSrc = cleanBody.slice(VOICE_PREFIX.length);
         const audioEl = document.createElement('audio');
         audioEl.className = 'audio-player';
         audioEl.controls = true;
@@ -448,7 +438,7 @@
         audioEl.src = audioSrc;
         bubble.appendChild(audioEl);
       } else {
-        bubble.textContent = msg.body;
+        bubble.textContent = cleanBody;
       }
 
       const time = document.createElement('div');
@@ -507,39 +497,34 @@
       await channel.send({ type: 'broadcast', event: eventName, payload }).catch(() => {});
     }
 
-    async function persistMessageBody(bodyText) {
+    async function persistMessageBody(plainBody) {
       if (!currentUser) {
         alert('يرجى تسجيل الدخول أولاً من الصفحة الرئيسية.');
         return;
       }
       if (!peerPhone || !sb) return;
 
-      const clientMsgId = 'cid_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      const mid = 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      const encodedBody = `[MID:${mid}]:${plainBody}`;
       const createdAt = new Date().toISOString();
-      const tempMsg = {
-        client_msg_id: clientMsgId,
+
+      const liveMsg = {
         sender_phone: currentUser.phone,
         receiver_phone: peerPhone,
-        body: bodyText,
+        body: encodedBody,
         created_at: createdAt
       };
 
-      appendBubble(tempMsg);
-      await sendBroadcastEvent(dmChannel, dmSubscribed, 'new_msg', tempMsg);
+      appendBubble(liveMsg);
+      await sendBroadcastEvent(dmChannel, dmSubscribed, 'new_msg', liveMsg);
 
-      const { data, error } = await sb
+      await sb
         .from('app_chat_messages')
         .insert({
           sender_phone: currentUser.phone,
           receiver_phone: peerPhone,
-          body: bodyText
-        })
-        .select()
-        .single();
-
-      if (!error && data) {
-        markRendered({ ...data, client_msg_id: clientMsgId });
-      }
+          body: encodedBody
+        });
     }
 
     async function sendMessage(e) {
@@ -561,7 +546,7 @@
       }
 
       if (!isRecording) {
-        if (isSendingVoice) return;
+        if (isProcessingVoiceStop) return;
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           audioChunks = [];
@@ -576,8 +561,8 @@
 
           mediaRecorder.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
-            if (isSendingVoice) return;
-            isSendingVoice = true;
+            if (isProcessingVoiceStop) return;
+            isProcessingVoiceStop = true;
             try {
               const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
               audioChunks = [];
@@ -591,7 +576,7 @@
                 await persistMessageBody(VOICE_PREFIX + base64Audio);
               }
             } finally {
-              isSendingVoice = false;
+              isProcessingVoiceStop = false;
             }
           };
 
@@ -771,7 +756,7 @@
 
       syncTimer = setInterval(() => {
         fetchPairMessages();
-      }, 2000);
+      }, 2500);
     }
 
     initHeader();
