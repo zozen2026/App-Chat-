@@ -372,16 +372,18 @@
     const liveStateText = document.getElementById('liveStateText');
     const remoteAudio = document.getElementById('remoteAudio');
 
-    const renderedIds = new Set();
+    const renderedKeys = new Set();
     const VOICE_PREFIX = '[VOICE]:';
     let mediaRecorder = null;
     let audioChunks = [];
     let isRecording = false;
+    let isSendingVoice = false;
 
     let dmChannel = null;
     let dmSubscribed = false;
     let callChannel = null;
     let callSubscribed = false;
+    let isRealtimeInitialized = false;
     let peerConn = null;
     let localStream = null;
     let isMuted = false;
@@ -402,11 +404,32 @@
       else if (emptyStateEl && emptyStateEl.parentNode) emptyStateEl.remove();
     }
 
-    function appendBubble(msg) {
+    function getMessageSignature(msg) {
+      const sec = msg.created_at ? String(msg.created_at).slice(0, 19) : '';
+      const bodyKey = typeof msg.body === 'string' && msg.body.startsWith(VOICE_PREFIX)
+        ? `voice_${msg.body.length}_${msg.body.slice(-24)}`
+        : String(msg.body || '');
+      return `sig_${msg.sender_phone || ''}_${msg.receiver_phone || ''}_${sec}_${bodyKey}`;
+    }
+
+    function isAlreadyRendered(msg) {
+      if (!msg) return true;
+      if (msg.id && renderedKeys.has(`id_${msg.id}`)) return true;
+      if (msg.client_msg_id && renderedKeys.has(`cid_${msg.client_msg_id}`)) return true;
+      if (renderedKeys.has(getMessageSignature(msg))) return true;
+      return false;
+    }
+
+    function markRendered(msg) {
       if (!msg) return;
-      const dedupKey = msg.id ? String(msg.id) : `${msg.sender_phone}_${msg.created_at}_${String(msg.body).slice(0, 32)}`;
-      if (renderedIds.has(dedupKey)) return;
-      renderedIds.add(dedupKey);
+      if (msg.id) renderedKeys.add(`id_${msg.id}`);
+      if (msg.client_msg_id) renderedKeys.add(`cid_${msg.client_msg_id}`);
+      renderedKeys.add(getMessageSignature(msg));
+    }
+
+    function appendBubble(msg) {
+      if (!msg || isAlreadyRendered(msg)) return;
+      markRendered(msg);
       removeEmptyState();
 
       const mine = currentUser && msg.sender_phone === currentUser.phone;
@@ -473,18 +496,12 @@
           let tries = 0;
           const iv = setInterval(() => {
             tries += 1;
-            if (tries > 20) {
+            const readyNow = channel === dmChannel ? dmSubscribed : callSubscribed;
+            if (readyNow || tries > 20) {
               clearInterval(iv);
               resolve();
             }
-          }, 80);
-          const check = setInterval(() => {
-            if ((channel === dmChannel && dmSubscribed) || (channel === callChannel && callSubscribed) || tries > 20) {
-              clearInterval(check);
-              clearInterval(iv);
-              resolve();
-            }
-          }, 50);
+          }, 60);
         });
       }
       await channel.send({ type: 'broadcast', event: eventName, payload }).catch(() => {});
@@ -497,9 +514,10 @@
       }
       if (!peerPhone || !sb) return;
 
+      const clientMsgId = 'cid_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       const createdAt = new Date().toISOString();
       const tempMsg = {
-        id: 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        client_msg_id: clientMsgId,
         sender_phone: currentUser.phone,
         receiver_phone: peerPhone,
         body: bodyText,
@@ -519,8 +537,8 @@
         .select()
         .single();
 
-      if (!error && data && data.id) {
-        renderedIds.add(String(data.id));
+      if (!error && data) {
+        markRendered({ ...data, client_msg_id: clientMsgId });
       }
     }
 
@@ -543,6 +561,7 @@
       }
 
       if (!isRecording) {
+        if (isSendingVoice) return;
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           audioChunks = [];
@@ -557,15 +576,23 @@
 
           mediaRecorder.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
-            const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-            if (blob.size < 150) return;
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-              if (typeof reader.result === 'string') {
-                await persistMessageBody(VOICE_PREFIX + reader.result);
+            if (isSendingVoice) return;
+            isSendingVoice = true;
+            try {
+              const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+              audioChunks = [];
+              if (blob.size < 150) return;
+              const base64Audio = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+                reader.readAsDataURL(blob);
+              });
+              if (base64Audio) {
+                await persistMessageBody(VOICE_PREFIX + base64Audio);
               }
-            };
-            reader.readAsDataURL(blob);
+            } finally {
+              isSendingVoice = false;
+            }
           };
 
           mediaRecorder.start();
@@ -663,7 +690,8 @@
     }
 
     function subscribeRealtime() {
-      if (!sb || !currentUser || !peerPhone) return;
+      if (!sb || !currentUser || !peerPhone || isRealtimeInitialized) return;
+      isRealtimeInitialized = true;
       const pairKey = getPairKey();
 
       dmChannel = sb.channel(`dm_live_${pairKey}`, {
@@ -686,9 +714,7 @@
             const betweenUs =
               (row.sender_phone === currentUser.phone && row.receiver_phone === peerPhone) ||
               (row.sender_phone === peerPhone && row.receiver_phone === currentUser.phone);
-            if (betweenUs && row.sender_phone !== currentUser.phone) {
-              appendBubble(row);
-            }
+            if (betweenUs) appendBubble(row);
           }
         )
         .subscribe((status) => {
@@ -743,10 +769,9 @@
           callSubscribed = status === 'SUBSCRIBED';
         });
 
-      // مزامنة تلقائية خفيفة كل 1.5 ثانية لضمان وصول أي رسالة حتى لو انقطع البث
       syncTimer = setInterval(() => {
         fetchPairMessages();
-      }, 1500);
+      }, 2000);
     }
 
     initHeader();
