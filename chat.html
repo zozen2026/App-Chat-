@@ -43,7 +43,6 @@
       box-shadow: 0 24px 55px -12px rgba(15, 23, 42, 0.1);
     }
 
-    /* الشريط العلوي */
     .chat-top {
       background: rgba(255, 255, 255, 0.94);
       backdrop-filter: blur(12px);
@@ -108,6 +107,11 @@
       direction: ltr;
       text-align: right;
     }
+    .live-dot {
+      font-size: 0.72rem;
+      color: #16a34a;
+      font-weight: 700;
+    }
 
     .top-actions {
       display: flex;
@@ -133,7 +137,6 @@
       border-color: #fecaca;
     }
 
-    /* شريط حالة المكالمة الصوتية */
     .call-bar {
       display: none;
       background: #f0f9ff;
@@ -169,7 +172,6 @@
       cursor: pointer;
     }
 
-    /* مساحة الرسائل */
     .messages-box {
       flex: 1;
       overflow-y: auto;
@@ -237,7 +239,6 @@
     }
     .msg-group.theirs .msg-time { text-align: left; }
 
-    /* شريط الإرسال والدردشة الصوتية */
     .composer {
       background: #ffffff;
       border-top: 1px solid var(--line);
@@ -318,6 +319,7 @@
         <div class="peer-meta">
           <div class="peer-name" id="peerTitle">جاري التحميل...</div>
           <div class="peer-phone" id="peerPhoneSub"></div>
+          <div class="live-dot" id="liveStateText">● متصل لحظياً</div>
         </div>
       </div>
       <div class="top-actions">
@@ -349,7 +351,11 @@
   <script>
     const SUPABASE_URL = 'https://lzvtnfdgynwczrkwlwhf.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6dnRuZmRneW53Y3pya3dsd2hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNDIxMTEsImV4cCI6MjEwNDcxODExMX0.w2hNlJ4SszyMBkUVjr1qiWNTTPxHMHkM9YOFtVP-pVI';
-    const sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+    const sb = window.supabase
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          realtime: { params: { eventsPerSecond: 20 } }
+        })
+      : null;
 
     const params = new URLSearchParams(window.location.search);
     const peerPhone = (params.get('peer') || '').trim();
@@ -357,35 +363,51 @@
     const currentUser = JSON.parse(localStorage.getItem('appchat_session') || 'null');
 
     const messagesBox = document.getElementById('messagesBox');
-    const emptyState = document.getElementById('emptyState');
+    const emptyStateEl = document.getElementById('emptyState');
     const msgInput = document.getElementById('msgInput');
     const voiceRecordBtn = document.getElementById('voiceRecordBtn');
     const callBar = document.getElementById('callBar');
     const callStatusText = document.getElementById('callStatusText');
     const voiceCallBtn = document.getElementById('voiceCallBtn');
+    const liveStateText = document.getElementById('liveStateText');
     const remoteAudio = document.getElementById('remoteAudio');
-    const renderedIds = new Set();
 
+    const renderedIds = new Set();
     const VOICE_PREFIX = '[VOICE]:';
     let mediaRecorder = null;
     let audioChunks = [];
     let isRecording = false;
 
-    // إعدادات المكالمة الصوتية عبر WebRTC
+    let dmChannel = null;
+    let dmSubscribed = false;
     let callChannel = null;
+    let callSubscribed = false;
     let peerConn = null;
     let localStream = null;
     let isMuted = false;
+    let syncTimer = null;
+
+    function getPairKey() {
+      return [String(currentUser?.phone || ''), String(peerPhone || '')].sort().join('_');
+    }
 
     function formatClock(iso) {
       const d = iso ? new Date(iso) : new Date();
       return d.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
     }
 
+    function removeEmptyState() {
+      const currentEmpty = document.getElementById('emptyState');
+      if (currentEmpty) currentEmpty.remove();
+      else if (emptyStateEl && emptyStateEl.parentNode) emptyStateEl.remove();
+    }
+
     function appendBubble(msg) {
-      if (msg.id && renderedIds.has(msg.id)) return;
-      if (msg.id) renderedIds.add(msg.id);
-      if (emptyState) emptyState.remove();
+      if (!msg) return;
+      const dedupKey = msg.id ? String(msg.id) : `${msg.sender_phone}_${msg.created_at}_${String(msg.body).slice(0, 32)}`;
+      if (renderedIds.has(dedupKey)) return;
+      renderedIds.add(dedupKey);
+      removeEmptyState();
 
       const mine = currentUser && msg.sender_phone === currentUser.phone;
       const group = document.createElement('div');
@@ -399,6 +421,7 @@
         const audioEl = document.createElement('audio');
         audioEl.className = 'audio-player';
         audioEl.controls = true;
+        audioEl.preload = 'metadata';
         audioEl.src = audioSrc;
         bubble.appendChild(audioEl);
       } else {
@@ -430,7 +453,7 @@
       document.title = `App Chat - ${displayName}`;
     }
 
-    async function loadHistory() {
+    async function fetchPairMessages() {
       if (!sb || !currentUser || !peerPhone) return;
       const { data, error } = await sb
         .from('app_chat_messages')
@@ -443,12 +466,48 @@
       }
     }
 
+    async function sendBroadcastEvent(channel, isReady, eventName, payload) {
+      if (!channel) return;
+      if (!isReady) {
+        await new Promise((resolve) => {
+          let tries = 0;
+          const iv = setInterval(() => {
+            tries += 1;
+            if (tries > 20) {
+              clearInterval(iv);
+              resolve();
+            }
+          }, 80);
+          const check = setInterval(() => {
+            if ((channel === dmChannel && dmSubscribed) || (channel === callChannel && callSubscribed) || tries > 20) {
+              clearInterval(check);
+              clearInterval(iv);
+              resolve();
+            }
+          }, 50);
+        });
+      }
+      await channel.send({ type: 'broadcast', event: eventName, payload }).catch(() => {});
+    }
+
     async function persistMessageBody(bodyText) {
       if (!currentUser) {
         alert('يرجى تسجيل الدخول أولاً من الصفحة الرئيسية.');
         return;
       }
       if (!peerPhone || !sb) return;
+
+      const createdAt = new Date().toISOString();
+      const tempMsg = {
+        id: 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        sender_phone: currentUser.phone,
+        receiver_phone: peerPhone,
+        body: bodyText,
+        created_at: createdAt
+      };
+
+      appendBubble(tempMsg);
+      await sendBroadcastEvent(dmChannel, dmSubscribed, 'new_msg', tempMsg);
 
       const { data, error } = await sb
         .from('app_chat_messages')
@@ -460,8 +519,8 @@
         .select()
         .single();
 
-      if (!error && data) {
-        appendBubble(data);
+      if (!error && data && data.id) {
+        renderedIds.add(String(data.id));
       }
     }
 
@@ -473,7 +532,6 @@
       await persistMessageBody(text);
     }
 
-    // تسجيل وإرسال رسالة صوتية
     async function toggleVoiceRecording() {
       if (!currentUser) {
         alert('يرجى تسجيل الدخول أولاً من الصفحة الرئيسية.');
@@ -488,7 +546,10 @@
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           audioChunks = [];
-          mediaRecorder = new MediaRecorder(stream);
+          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+          mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
           mediaRecorder.ondataavailable = (ev) => {
             if (ev.data && ev.data.size > 0) audioChunks.push(ev.data);
@@ -497,7 +558,7 @@
           mediaRecorder.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
             const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-            if (blob.size < 200) return;
+            if (blob.size < 150) return;
             const reader = new FileReader();
             reader.onloadend = async () => {
               if (typeof reader.result === 'string') {
@@ -524,23 +585,23 @@
       }
     }
 
-    // مكالمة صوتية مباشرة عبر WebRTC + Supabase Broadcast
     function createPeerConnection() {
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
       pc.onicecandidate = (ev) => {
-        if (ev.candidate && callChannel) {
-          callChannel.send({
-            type: 'broadcast',
-            event: 'webrtc_ice',
-            payload: { from: currentUser.phone, to: peerPhone, candidate: ev.candidate }
-          }).catch(() => {});
+        if (ev.candidate) {
+          sendBroadcastEvent(callChannel, callSubscribed, 'webrtc_ice', {
+            from: currentUser.phone,
+            to: peerPhone,
+            candidate: ev.candidate
+          });
         }
       };
       pc.ontrack = (ev) => {
         if (ev.streams && ev.streams[0]) {
           remoteAudio.srcObject = ev.streams[0];
+          remoteAudio.play().catch(() => {});
         }
       };
       return pc;
@@ -566,10 +627,10 @@
         voiceCallBtn.classList.add('active');
         voiceCallBtn.textContent = '📵 إنهاء';
 
-        await callChannel.send({
-          type: 'broadcast',
-          event: 'webrtc_offer',
-          payload: { from: currentUser.phone, to: peerPhone, offer }
+        await sendBroadcastEvent(callChannel, callSubscribed, 'webrtc_offer', {
+          from: currentUser.phone,
+          to: peerPhone,
+          offer
         });
       } catch (err) {
         alert('تعذر بدء المكالمة الصوتية.');
@@ -585,12 +646,11 @@
     }
 
     function hangupVoiceCall(notifyPeer = true) {
-      if (notifyPeer && callChannel && currentUser && peerPhone) {
-        callChannel.send({
-          type: 'broadcast',
-          event: 'webrtc_hangup',
-          payload: { from: currentUser.phone, to: peerPhone }
-        }).catch(() => {});
+      if (notifyPeer && currentUser && peerPhone) {
+        sendBroadcastEvent(callChannel, callSubscribed, 'webrtc_hangup', {
+          from: currentUser.phone,
+          to: peerPhone
+        });
       }
       if (peerConn) { peerConn.close(); peerConn = null; }
       if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
@@ -602,10 +662,22 @@
       voiceCallBtn.textContent = '📞 صوتي';
     }
 
-    function subscribeMessages() {
+    function subscribeRealtime() {
       if (!sb || !currentUser || !peerPhone) return;
+      const pairKey = getPairKey();
 
-      sb.channel(`dm_${currentUser.phone}_${peerPhone}`)
+      dmChannel = sb.channel(`dm_live_${pairKey}`, {
+        config: { broadcast: { ack: false } }
+      })
+        .on('broadcast', { event: 'new_msg' }, ({ payload }) => {
+          if (!payload) return;
+          const betweenUs =
+            (payload.sender_phone === currentUser.phone && payload.receiver_phone === peerPhone) ||
+            (payload.sender_phone === peerPhone && payload.receiver_phone === currentUser.phone);
+          if (betweenUs && payload.sender_phone !== currentUser.phone) {
+            appendBubble(payload);
+          }
+        })
         .on(
           'postgres_changes',
           { event: 'INSERT', schema: 'public', table: 'app_chat_messages' },
@@ -614,13 +686,19 @@
             const betweenUs =
               (row.sender_phone === currentUser.phone && row.receiver_phone === peerPhone) ||
               (row.sender_phone === peerPhone && row.receiver_phone === currentUser.phone);
-            if (betweenUs) appendBubble(row);
+            if (betweenUs && row.sender_phone !== currentUser.phone) {
+              appendBubble(row);
+            }
           }
         )
-        .subscribe();
+        .subscribe((status) => {
+          dmSubscribed = status === 'SUBSCRIBED';
+          liveStateText.textContent = dmSubscribed ? '● متصل لحظياً' : '○ جارٍ الربط...';
+        });
 
-      const roomKey = [currentUser.phone, peerPhone].sort().join('_');
-      callChannel = sb.channel(`voice_call_${roomKey}`)
+      callChannel = sb.channel(`voice_call_${pairKey}`, {
+        config: { broadcast: { ack: false } }
+      })
         .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
           if (!payload || payload.to !== currentUser.phone) return;
           const accept = confirm(`مكالمة صوتية واردة من ${peerPhone}. هل تريد الرد؟`);
@@ -632,14 +710,16 @@
             await peerConn.setRemoteDescription(new RTCSessionDescription(payload.offer));
             const answer = await peerConn.createAnswer();
             await peerConn.setLocalDescription(answer);
+
             callBar.classList.add('show');
             callStatusText.textContent = '🎧 متصل صوتياً الآن';
             voiceCallBtn.classList.add('active');
             voiceCallBtn.textContent = '📵 إنهاء';
-            await callChannel.send({
-              type: 'broadcast',
-              event: 'webrtc_answer',
-              payload: { from: currentUser.phone, to: payload.from, answer }
+
+            await sendBroadcastEvent(callChannel, callSubscribed, 'webrtc_answer', {
+              from: currentUser.phone,
+              to: payload.from,
+              answer
             });
           } catch (e) {
             hangupVoiceCall();
@@ -659,12 +739,19 @@
             hangupVoiceCall(false);
           }
         })
-        .subscribe();
+        .subscribe((status) => {
+          callSubscribed = status === 'SUBSCRIBED';
+        });
+
+      // مزامنة تلقائية خفيفة كل 1.5 ثانية لضمان وصول أي رسالة حتى لو انقطع البث
+      syncTimer = setInterval(() => {
+        fetchPairMessages();
+      }, 1500);
     }
 
     initHeader();
-    loadHistory();
-    subscribeMessages();
+    fetchPairMessages();
+    subscribeRealtime();
   </script>
 </body>
 </html>
